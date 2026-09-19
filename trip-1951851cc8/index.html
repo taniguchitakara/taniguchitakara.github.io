@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow, noarchive">
+<title>Travel Map</title>
+<style>
+:root {
+  --bg: #ffffff; --ink: #1d1d1f; --ink2: #555a63; --line: #d5d7dc;
+  --unvisited: #a0a0a0; --card: #f5f6f8;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #16171a; --ink: #eceef2; --ink2: #a3a8b2; --line: #33363d; --unvisited: #55585f; --card: #1f2126; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink);
+  font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic", "Noto Sans JP", sans-serif; }
+main { max-width: 980px; margin: 0 auto; padding: 24px 16px 64px; }
+h1 { font-size: 22px; margin: 0 0 4px; }
+.sub { color: var(--ink2); margin: 0 0 20px; font-size: 13px; }
+.tabs { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; margin-bottom: 16px; }
+.tabs button { border: 0; background: none; color: var(--ink2); padding: 8px 20px; font: inherit; cursor: pointer; }
+.tabs button[aria-selected="true"] { background: var(--ink); color: var(--bg); }
+.count { display: flex; align-items: baseline; gap: 8px; margin-bottom: 12px; }
+.count b { font-size: 40px; line-height: 1; font-variant-numeric: tabular-nums; }
+.count span { color: var(--ink2); }
+.mapwrap { position: relative; border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+svg { display: block; width: 100%; height: auto; }
+.area { stroke: var(--bg); stroke-width: .6; fill: var(--unvisited); transition: opacity .12s; }
+svg:has(g:hover) g:not(:hover) { opacity: .8; }
+.frame { fill: none; stroke: var(--ink2); stroke-width: 1; opacity: .5; }
+.dot { stroke: var(--bg); stroke-width: .6; }
+#tip { position: fixed; pointer-events: none; z-index: 5; padding: 4px 10px; border-radius: 6px; font-size: 13px;
+  background: var(--ink); color: var(--bg); white-space: nowrap; display: none; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 16px 0; font-size: 13px; color: var(--ink2); }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; }
+.legend .n { font-variant-numeric: tabular-nums; }
+.list { background: var(--card); border-radius: 8px; padding: 12px 16px; font-size: 14px; }
+.list h2 { font-size: 13px; margin: 0 0 6px; color: var(--ink2); font-weight: 600; }
+.list p { margin: 0 0 8px; }
+.list p:last-child { margin-bottom: 0; }
+.list em { font-style: normal; color: var(--ink2); margin-right: 8px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Travel Map</h1>
+  <p class="sub">行ったことがある場所</p>
+  <div class="tabs" role="tablist">
+    <button role="tab" id="t-japan" aria-selected="true">日本</button>
+    <button role="tab" id="t-world" aria-selected="false">世界</button>
+  </div>
+  <div class="count"><b id="num">0</b><span id="of"></span></div>
+  <div class="mapwrap"><svg id="map" role="img" aria-label="訪問済みの地図"></svg></div>
+  <div class="legend" id="legend"></div>
+  <div class="list" id="list"></div>
+</main>
+<div id="tip"></div>
+<script>
+const GROUPS = {
+  japan: [['北海道','#7f7fd5','北海道'],['東北','#7b9bea','東北'],['関東','#8ecae6','関東'],['中部','#90d99a','中部'],
+          ['近畿','#fbe87d','近畿'],['中国','#f6cd76','中国'],['四国','#c7a6e8','四国'],['九州・沖縄','#f19f9f','九州・沖縄']],
+  world: [['Asia','#f19f9f','アジア'],['Europe','#7b9bea','ヨーロッパ'],['Africa','#fbe87d','アフリカ'],
+          ['North America','#90d99a','北・中米'],['South America','#f6cd76','南米'],['Oceania','#8ecae6','オセアニア']]
+};
+const UNIT = { japan: '都道府県', world: 'か国・地域' };
+const NS = 'http://www.w3.org/2000/svg';
+const $ = id => document.getElementById(id);
+const tip = $('tip');
+let data = {}, visited = {}, tab = 'japan';
+
+const get = f => fetch(f).then(r => { if (!r.ok) throw new Error(f); return r.json(); });
+
+async function init() {
+  const [jp, wd, v] = await Promise.all([get('data/japan.json'), get('data/world.json'), get('visited.json')]);
+  data = { japan: jp, world: wd };
+  // japan is keyed by prefecture name, world by ISO code
+  visited = { japan: new Set(v.japan || []), world: new Set((v.world || []).map(s => s.toUpperCase())) };
+  const key = t => t === 'japan' ? i => i.name : i => i.id;
+  data.key = { japan: key('japan'), world: key('world') };
+  const unknown = [...visited.japan].filter(n => !jp.items.some(i => i.name === n))
+    .concat([...visited.world].filter(c => !wd.items.some(i => i.id === c)));
+  if (unknown.length) console.warn('visited.json に未知の名前/コードがあります:', unknown);
+  $('t-japan').onclick = () => show('japan');
+  $('t-world').onclick = () => show('world');
+  show(location.hash === '#world' ? 'world' : 'japan');
+}
+
+function show(t) {
+  tab = t;
+  history.replaceState(null, '', t === 'world' ? '#world' : location.pathname + location.search);
+  for (const k of ['japan', 'world']) $('t-' + k).setAttribute('aria-selected', k === t);
+  const d = data[t], key = data.key[t], color = Object.fromEntries(GROUPS[t].map(g => [g[0], g[1]]));
+  const svg = $('map');
+  svg.setAttribute('viewBox', `0 0 ${d.w} ${d.h}`);
+  svg.replaceChildren();
+  if (d.frame) { const f = document.createElementNS(NS, 'path'); f.setAttribute('d', d.frame); f.setAttribute('class', 'frame'); svg.append(f); }
+  for (const it of d.items) {
+    const on = visited[t].has(key(it)), fill = on ? color[it.group] : null;
+    const g = document.createElementNS(NS, 'g');
+    if (on) g.classList.add('on');
+    g.dataset.tip = it.name + (on ? ' ✓' : '');
+    const p = document.createElementNS(NS, 'path');
+    p.setAttribute('d', it.d);
+    if (fill) p.style.fill = fill;
+    p.classList.add('area'); p.style.stroke = 'var(--bg)';
+    g.append(p);
+    if (it.dot) {
+      const c = document.createElementNS(NS, 'circle');
+      c.setAttribute('cx', it.dot[0]); c.setAttribute('cy', it.dot[1]); c.setAttribute('r', 2.6);
+      c.setAttribute('class', 'dot'); c.style.fill = fill || 'var(--unvisited)';
+      g.append(c);
+    }
+    svg.append(g);
+  }
+  // legend + counts
+  const total = {}, got = {};
+  for (const it of d.items) { total[it.group] = (total[it.group] || 0) + 1; if (visited[t].has(key(it))) got[it.group] = (got[it.group] || 0) + 1; }
+  $('legend').innerHTML = GROUPS[t].map(([g, c, label]) =>
+    `<span><i style="background:${c}"></i>${label} <span class="n">${got[g] || 0}/${total[g] || 0}</span></span>`).join('') +
+    `<span><i style="background:var(--unvisited)"></i>未訪問</span>`;
+  const n = d.items.filter(it => visited[t].has(key(it))).length;
+  $('num').textContent = n;
+  $('of').textContent = `/ ${d.items.length} ${UNIT[t]}`;
+  // list view (also serves as the non-visual table)
+  $('list').innerHTML = '<h2>訪問済み</h2>' + GROUPS[t].map(([g, c, label]) => {
+    const names = d.items.filter(it => it.group === g && visited[t].has(key(it))).map(it => it.name);
+    return names.length ? `<p><em>${label}</em>${names.join('、')}</p>` : '';
+  }).join('') || '';
+  if (!n) $('list').innerHTML += '<p><em>まだありません</em></p>';
+}
+
+// tooltip (mouse hover; tap on touch)
+const move = e => { tip.style.left = Math.min(e.clientX + 12, innerWidth - tip.offsetWidth - 8) + 'px'; tip.style.top = e.clientY + 14 + 'px'; };
+document.addEventListener('pointermove', e => {
+  const g = e.target.closest && e.target.closest('g[data-tip]');
+  if (!g) { tip.style.display = 'none'; return; }
+  tip.textContent = g.dataset.tip; tip.style.display = 'block'; move(e);
+});
+document.addEventListener('pointerleave', () => tip.style.display = 'none');
+init().catch(e => { document.body.insertAdjacentHTML('beforeend', '<p style="padding:16px">読み込みに失敗しました: ' + e.message + '</p>'); });
+</script>
+</body>
+</html>
