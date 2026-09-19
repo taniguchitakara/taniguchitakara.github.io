@@ -30,9 +30,6 @@ svg { display: block; width: 100%; height: auto; }
 .area { stroke: var(--bg); stroke-width: .6; fill: var(--unvisited); transition: opacity .12s; }
 svg:has(g:hover) g:not(:hover) { opacity: .8; }
 .frame { fill: none; stroke: var(--ink2); stroke-width: 1; opacity: .5; }
-.note text { font-size: 12px; font-weight: 600; fill: var(--ink); paint-order: stroke; stroke: var(--bg); stroke-width: 3px; stroke-linejoin: round; }
-.note line { stroke: var(--ink); stroke-width: 1; opacity: .7; }
-.note circle { fill: var(--ink); stroke: var(--bg); stroke-width: 1.5; }
 .dot { stroke: var(--bg); stroke-width: .6; }
 #tip { position: fixed; pointer-events: none; z-index: 5; padding: 4px 10px; border-radius: 6px; font-size: 13px;
   background: var(--ink); color: var(--bg); white-space: nowrap; display: none; }
@@ -80,7 +77,7 @@ async function init() {
   data = { japan: jp, world: wd };
   // japan is keyed by prefecture name, world by ISO code
   visited = { japan: new Set(v.japan || []), world: new Set((v.world || []).map(s => s.toUpperCase())) };
-  // notes: { "CN": "上海" } or { "CN": { "text": "上海", "at": [121.47, 31.23] } } or an array of those
+  // notes: { "CN": "上海" } or an array of strings; shown in the hover tooltip and the list
   notes = {};
   for (const [k, val] of Object.entries(v.notes || {}))
     notes[k] = [].concat(val).map(n => typeof n === 'string' ? { text: n } : n);
@@ -122,7 +119,6 @@ function show(t) {
     }
     svg.append(g);
   }
-  drawNotes(svg, t, d, key);
   // legend + counts
   const total = {}, got = {};
   for (const it of d.items) { total[it.group] = (total[it.group] || 0) + 1; if (visited[t].has(key(it))) got[it.group] = (got[it.group] || 0) + 1; }
@@ -138,52 +134,6 @@ function show(t) {
     return names.length ? `<p><em>${label}</em>${names.join('、')}</p>` : '';
   }).join('') || '';
   if (!n) $('list').innerHTML += '<p><em>まだありません</em></p>';
-}
-
-// ---- on-map annotations -------------------------------------------------
-const RAD = Math.PI / 180;
-function project(p, [lo, la]) {
-  if (p.type === 'mercator')
-    return [p.t[0] + p.k * lo * RAD, p.t[1] - p.k * Math.log(Math.tan(Math.PI / 4 + la * RAD / 2))];
-  const l = lo * RAD, f = la * RAD, f2 = f * f, f4 = f2 * f2; // Natural Earth
-  return [p.t[0] + p.k * l * (0.8707 - 0.131979 * f2 + f4 * (-0.013791 + f4 * (0.003971 * f2 - 0.001529 * f4))),
-          p.t[1] - p.k * f * (1.007226 + f2 * (0.015085 + f4 * (-0.044475 + 0.028874 * f2 - 0.005916 * f4)))];
-}
-const FS = 12, DIRS = [[1, 0], [-1, 0], [.7, -.7], [.7, .7], [-.7, -.7], [-.7, .7], [0, -1], [0, 1]];
-function drawNotes(svg, t, d, key) {
-  const items = [];
-  for (const it of d.items) for (const n of notes[key(it)] || []) {
-    if (!visited[t].has(key(it))) continue;
-    const p = n.at ? project(t === 'japan' && it.id === '47' ? d.projInset : d.proj, n.at) : it.c;
-    items.push({ text: n.text, a: p });
-  }
-  const g = document.createElementNS(NS, 'g'); g.setAttribute('class', 'note'); g.setAttribute('pointer-events', 'none');
-  const placed = [], pins = items.map(i => i.a);
-  const hit = (r, o) => r.x < o.x + o.w && o.x < r.x + r.w && r.y < o.y + o.h && o.y < r.y + r.h;
-  for (const it of items) {
-    const w = it.text.length * FS * 1.02 + 6, h = FS + 6;
-    let best = null;
-    search: for (const rad of [16, 28, 44, 64]) for (const [dx, dy] of DIRS) {
-      const px = it.a[0] + dx * rad, py = it.a[1] + dy * rad;
-      const x = dx > .3 ? px : dx < -.3 ? px - w : px - w / 2, y = py - h / 2;
-      const r = { x, y, w, h };
-      if (x < 2 || y < 2 || x + w > d.w - 2 || y + h > d.h - 2) continue;
-      if (placed.some(o => hit(r, o)) || pins.some(([qx, qy]) => hit(r, { x: qx - 5, y: qy - 5, w: 10, h: 10 }))) continue;
-      best = { r, px, py, anchor: dx > .3 ? 'start' : dx < -.3 ? 'end' : 'middle' }; break search;
-    }
-    if (!best) { const r = { x: it.a[0] + 8, y: it.a[1] - h / 2, w, h }; best = { r, px: it.a[0] + 8, py: it.a[1], anchor: 'start' }; }
-    placed.push(best.r);
-    const line = document.createElementNS(NS, 'line');
-    line.setAttribute('x1', it.a[0]); line.setAttribute('y1', it.a[1]); line.setAttribute('x2', best.px); line.setAttribute('y2', best.py);
-    const dot = document.createElementNS(NS, 'circle');
-    dot.setAttribute('cx', it.a[0]); dot.setAttribute('cy', it.a[1]); dot.setAttribute('r', 3);
-    const tx = document.createElementNS(NS, 'text');
-    const pad = best.anchor === 'start' ? 3 : best.anchor === 'end' ? -3 : 0;
-    tx.setAttribute('x', best.px + pad); tx.setAttribute('y', best.py + FS * .35); tx.setAttribute('text-anchor', best.anchor);
-    tx.textContent = it.text;
-    g.append(line, dot, tx);
-  }
-  svg.append(g);
 }
 
 // tooltip (mouse hover; tap on touch)
